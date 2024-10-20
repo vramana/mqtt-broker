@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+
+	"github.com/google/uuid"
 )
 
 const PacketTypeReserved = 0
@@ -71,7 +73,7 @@ func readControlPacket(data []byte) ControlPacket {
 
 	fmt.Println(PacketTypeStrings[packetType])
 
-	fmt.Printf("Remaining Length %d", data[1])
+	fmt.Printf("Remaining Length %d\n", data[1])
 
 	return ControlPacket{packetType, data[1]}
 }
@@ -95,14 +97,51 @@ type MqttBroker struct {
 	connectionChan chan connectionEvent
 }
 
-func (broker *MqttBroker) addConnection(conn net.Conn) {
-  connectionChan <- connectionEvent {
-    conn
+func newMqttBroker() *MqttBroker {
+	broker := &MqttBroker{
+		connections:    make(map[string]net.Conn),
+		connectionChan: make(chan connectionEvent),
+	}
 
-	go broker.handleConnection(conn)
+	go broker.manageConnections()
+
+	return broker
 }
 
-func (broker *MqttBroker) handleConnection(conn net.Conn) {
+func (broker *MqttBroker) addConnection(conn net.Conn) {
+	connId := uuid.New().String()
+
+	broker.connectionChan <- connectionEvent{
+		conn,
+		"add",
+		connId,
+	}
+
+	go broker.handleConnection(connId, conn)
+}
+
+func (broker *MqttBroker) removeConnection(connId string) {
+	broker.connectionChan <- connectionEvent{
+		conn:   nil,
+		action: "remove",
+		connId: connId,
+	}
+}
+
+func (broker *MqttBroker) manageConnections() {
+	for event := range broker.connectionChan {
+		switch event.action {
+		case "add":
+			broker.connections[event.connId] = event.conn
+			fmt.Println("Added Connection", event.connId)
+		case "remove":
+			delete(broker.connections, event.connId)
+			fmt.Println("Removed connection", event.connId)
+		}
+	}
+}
+
+func (broker *MqttBroker) handleConnection(connId string, conn net.Conn) {
 	b := make([]byte, 1024)
 	// handle connection
 	fmt.Println("Close Connection")
@@ -123,16 +162,13 @@ func (broker *MqttBroker) handleConnection(conn net.Conn) {
 	}
 
 	conn.Close()
-
+	broker.removeConnection(connId)
 }
 
 func main() {
 	fmt.Println("Hello World")
 
-	broker := MqttBroker{
-		connections: make(map[string]net.Conn),
-	}
-
+	broker := newMqttBroker()
 	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		// handle error
